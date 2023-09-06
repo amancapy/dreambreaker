@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 from keras import layers, models, Model, activations, losses, optimizers, regularizers
 from keras.utils import plot_model
-
+import gc
 
 env = gym.make("ALE/Breakout-v5", full_action_space=False)
-obs = env.reset(seed=42)
+obs = env.reset()
 
 class NormalScalar(layers.Layer):
     def __init__(self):
@@ -19,9 +19,10 @@ class NormalScalar(layers.Layer):
         return x * tf.random.normal(1, 0., 1.)
 
 def get_vae():
-    inputs = layers.Input((64, 64, 3))
+    inputs = layers.Input((128, 128, 3))
 
-    x = layers.Conv2D(32, 4, 2, activation="relu")(inputs)
+    x = layers.Conv2D(16, 4, 2, activation="relu")(inputs)
+    x = layers.Conv2D(32, 4, 2, activation="relu")(x)
     x = layers.Conv2D(64, 4, 2, activation="relu")(x)
     x = layers.Conv2D(128, 4, 2, activation="relu")(x)
     x = layers.Conv2D(256, 4, 2, activation="relu")(x)
@@ -35,6 +36,7 @@ def get_vae():
 
     w = layers.Dense(1024, activation="relu")(z)
     w = layers.Reshape((1, 1, 1024))(w)
+    w = layers.Conv2DTranspose(256, 5, 2, activation="relu")(w)
     w = layers.Conv2DTranspose(128, 5, 2, activation="relu")(w)
     w = layers.Conv2DTranspose(64, 5, 2, activation="relu")(w)
     w = layers.Conv2DTranspose(32, 6, 2, activation="relu")(w)
@@ -54,29 +56,29 @@ if not load_saved_model:
     loss = losses.MeanSquaredError()
 
     batchsize = 64
-    num_batches = 1000
     engine = get_vae()
     
-    i = 0
-    stream = []
-    while i < 10:
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-        obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32)
-        obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-        obs = tf.image.resize(obs, (64, 64)) / 255.
-        stream.append(obs)
+    for i in range(10):
+        stream = []
+        env.reset()
+        while len(stream) < batchsize * 100:
+            action = env.action_space.sample()
+            obs, reward, terminated, truncated, info = env.step(action)
+            if terminated:
+                env.reset()
+            obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32)
+            obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
+            obs = tf.image.resize(obs, (128, 128)) / 255.
+            stream.append(obs)
 
-        if terminated or truncated:
-            env.reset()
+            if terminated or truncated:
+                env.reset()
 
+        stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
 
-        if len(stream) >= batchsize * 100:
-            stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
+        engine.fit(stream, stream, epochs=10, shuffle=True, batch_size=batchsize)
+        gc.collect()
 
-            engine.fit(stream, stream, epochs=10, shuffle=True, batch_size=batchsize)
-            i += 1
-            stream = []
                     
             # with tf.GradientTape() as tape:
             #     stm = stream[-batchsize:]
@@ -94,17 +96,19 @@ if not load_saved_model:
     engine.save(f"save")
 
 else:
-    engine = models.load_model(f"breakout")
+    engine = models.load_model(f"save")
 
 env.reset()
 
 for _ in range(1000):
     action = env.action_space.sample()
     obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        env.reset()
 
 obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
 obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-obs = tf.image.resize(obs, (64, 64))
+obs = tf.image.resize(obs, (128, 128))
 obs = tf.expand_dims(obs, axis=0)
 pred = engine(obs)
 
