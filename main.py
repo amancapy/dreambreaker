@@ -24,7 +24,7 @@ class NormalScalar(layers.Layer):
 
 # adapted from https://keras.io/examples/generative/vae/
 class VAE(models.Model):
-    def __init__(self):
+    def __init__(self, latent_size):
         super().__init__()
         self.total_loss_tracker = metrics.Mean("total_loss")
         self.recon_loss_tracker = metrics.Mean("recon_loss")
@@ -32,11 +32,13 @@ class VAE(models.Model):
 
         self.encoder = self.get_encoder()
         self.decoder = self.get_decoder()
-        self.aside = Model(inputs=self.encoder.inputs, outputs=self.decoder(self.encoder.outputs[2]))
-        self.aside.build((64, 64, 3))
+
+        self.latent_size = latent_size    
 
     def get_built_shadow(self):
-        return self.aside
+        shadow = Model(inputs=self.encoder.inputs, outputs=self.decoder(self.encoder.outputs[2]))
+        shadow.build((64, 64, 3))
+        return shadow
     
     def get_encoder(self):
         inputs = layers.Input((64, 64, 3))
@@ -47,16 +49,17 @@ class VAE(models.Model):
         x = layers.Conv2D(256, 4, 2, activation="relu")(x)
         x = layers.Flatten()(x)
 
-        mu = layers.Dense(128)(x)
-        logs2 = layers.Dense(128)(x)
+        mu = layers.Dense(self.latent_size)(x)
+        logs2 = layers.Dense(self.latent_size)(x)
         z = mu + NormalScalar()(tf.exp(logs2 / 2))
 
         return Model(inputs=inputs, outputs=[mu, logs2, z])
     
     def get_decoder(self):
-        inputs = layers.Input((128, ))
+        inputs = layers.Input((self.latent_size, ))
+
         x = layers.Dense(128, activation="relu")(inputs)
-        x = layers.Reshape((1, 1, 128))(x)
+        x = layers.Reshape((1, 1, self.latent_size))(x)
         x = layers.Conv2DTranspose(256, 5, 2, activation="relu")(x)
         x = layers.Conv2DTranspose(128, 5, 2, activation="relu")(x)
         x = layers.Conv2DTranspose(64, 6, 2, activation="relu")(x)
@@ -81,7 +84,7 @@ class VAE(models.Model):
             recon_loss = losses.mse(data, recon)
             kld_loss = -.05 * tf.reduce_sum((1 + logs2 - tf.square(mu) - tf.exp(logs2)), axis=-1)
 
-            total_loss = recon_loss + kld_loss
+            total_loss = recon_loss + 0.1 * kld_loss
 
             grads = tape.gradient(total_loss, self.trainable_variables)
             self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
@@ -105,7 +108,7 @@ if not load_saved_model:
     loss = losses.MeanSquaredError()
 
     batchsize = 64
-    vae = VAE()
+    vae = VAE(512)
     vae.compile(optimizer=optimizers.Adam())
 
     for i in range(10):
@@ -122,7 +125,7 @@ if not load_saved_model:
             stream.append(obs)
 
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
-        vae.fit(stream, epochs=20, shuffle=True, batch_size=batchsize)
+        vae.fit(stream, epochs=20, shuffle=True, batch_size=batchsize, verbose=2)
         gc.collect()
                     
         # with tf.GradientTape() as tape:
@@ -163,7 +166,6 @@ for i in range(1000):
         # gc.collect()
 
 vidstream = tf.convert_to_tensor(vidstream, dtype=tf.dtypes.float32)
-
 reconstream = vae(vidstream)
 
 vidstream = vidstream.numpy()
