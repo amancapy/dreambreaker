@@ -4,7 +4,7 @@ import gym
 import matplotlib.pyplot as plt
 import random
 import tensorflow as tf
-from keras import layers, models, Model, activations, losses, optimizers, regularizers
+from keras import layers, models, Model, activations, losses, optimizers, regularizers, metrics
 from keras.utils import plot_model
 import gc
 
@@ -35,8 +35,18 @@ def vae_loss(y_true, y_pred):
     return recon + kld
 
 
+# derived from https://keras.io/examples/generative/vae/
 class VAE(models.Model):
-    def encoder(self):
+    def __init__(self):
+        super().__init__()
+        self.total_loss_tracker = metrics.Mean("total_loss")
+        self.recon_loss_tracker = metrics.Mean("recon_loss")
+        self.kld_loss_tracker = metrics.Mean("kld_loss")
+
+        self.encoder = self.get_encoder()
+        self.decoder = self.get_decoder()
+
+    def get_encoder(self):
         inputs = layers.Input((64, 64, 3))
 
         x = layers.Conv2D(32, 4, 2, activation="relu")(inputs)
@@ -51,7 +61,7 @@ class VAE(models.Model):
 
         return Model(inputs=inputs, outputs=[mu, logs2, z])
     
-    def decoder(self):
+    def get_decoder(self):
         inputs = layers.Input((128, 1))
         x = layers.Dense(128, activation="relu")(inputs)
         x = layers.Reshape((1, 1, 128))(x)
@@ -63,8 +73,33 @@ class VAE(models.Model):
 
         return Model(inputs=inputs, outputs=outputs)
     
-    def __init__(self):
-        super().__init__()
+    @property
+    def metrics(self):
+        return [self.total_loss_tracker, self.recon_loss_tracker, self.kld_loss_tracker]
+    
+    def train_step(self, data):
+        with tf.GradientTape() as tape:
+            mu, logs2, z = self.encoder(data)
+            recon = self.decoder(z)
+
+            recon_loss = losses.mse(data, recon)
+            kld_loss = -.05 * tf.reduce_sum((1 + logs2 - tf.square(mu) - tf.exp(logs2)), axis=-1)
+
+            total_loss = recon_loss + kld_loss
+
+            grads = tape.gradient(total_loss, self.trainable_variables)
+            self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
+
+            self.total_loss_tracker.update_state(total_loss)
+            self.recon_loss_tracker.update_state(recon_loss)
+            self.kld_loss_tracker.update_state(kld_loss)
+
+            return {
+                "loss": self.total_loss_tracker.result(),
+                "recon_loss": self.recon_loss_tracker.result(),
+                "kld_loss": self.kld_loss_tracker.result()
+            }
+
 
 load_saved_model = False
 if not load_saved_model:
@@ -72,7 +107,7 @@ if not load_saved_model:
     loss = losses.MeanSquaredError()
 
     batchsize = 64
-    engine = get_vae()
+    engine = VAE()
     
     for i in range(10):
         stream = []
