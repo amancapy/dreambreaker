@@ -8,46 +8,63 @@ from keras import layers, models, Model, activations, losses, optimizers, regula
 from keras.utils import plot_model
 import gc
 
-env = gym.make("ALE/DemonAttack-v5", full_action_space=False)
+
+env = gym.make("ALE/Skiing", full_action_space=False)
 obs = env.reset()
+
 
 class NormalScalar(layers.Layer):
     def __init__(self):
         super().__init__()
         pass
 
-    def forward(x):
+    def forward(self, x):
         return x * tf.random.normal(1, 0., 1.)
 
-def get_vae():
-    inputs = layers.Input((64, 64, 3))
 
-    x = layers.Conv2D(32, 4, 2, activation="relu")(inputs)
-    x = layers.Conv2D(64, 4, 2, activation="relu")(x)
-    x = layers.Conv2D(128, 4, 2, activation="relu")(x)
-    x = layers.Conv2D(256, 4, 2, activation="relu")(x)
+def vae_loss(y_true, y_pred):
+    print(y_pred.shape, y_true.shape)
+    mu = y_pred[1]
+    logs2 = y_pred[2]
 
-    x = layers.Flatten()(x)
+    print(mu, logs2, y_pred)
 
-    mu = layers.Dense(128, activation="tanh")(x)
-    sigma = layers.Dense(128, activation="relu")(x)
+    recon = losses.mse(y_true, y_pred)
+    kld = -0.5 * tf.reduce_sum(1 + logs2 - tf.square(mu) - tf.exp(logs2))
 
-    z = mu + NormalScalar()(sigma)
+    return recon + kld
 
-    x = layers.Dense(128, activation="relu")(z)
-    x = layers.Reshape((1, 1, 128))(x)
-    x = layers.Conv2DTranspose(256, 5, 2, activation="relu")(x)
-    x = layers.Conv2DTranspose(128, 5, 2, activation="relu")(x)
-    x = layers.Conv2DTranspose(64, 6, 2, activation="relu")(x)
-    outputs = layers.Conv2DTranspose(3, 6, 2, activation="tanh", use_bias=False)(x)
 
-    vae = Model(inputs=inputs, outputs=outputs)
-    vae.summary()
-    vae.compile("adam", "mse")
-    # plot_model(vae, show_shapes=True)
+class VAE(models.Model):
+    def encoder(self):
+        inputs = layers.Input((64, 64, 3))
 
-    return vae
+        x = layers.Conv2D(32, 4, 2, activation="relu")(inputs)
+        x = layers.Conv2D(64, 4, 2, activation="relu")(x)
+        x = layers.Conv2D(128, 4, 2, activation="relu")(x)
+        x = layers.Conv2D(256, 4, 2, activation="relu")(x)
+        x = layers.Flatten()(x)
 
+        mu = layers.Dense(128, activation="tanh")(x)
+        logs2 = layers.Dense(128, activation="relu")(x)
+        z = mu + tf.exp(logs2 / 2) * tf.random.normal((1, ), 0., 1.)
+
+        return Model(inputs=inputs, outputs=[mu, logs2, z])
+    
+    def decoder(self):
+        inputs = layers.Input((128, 1))
+        x = layers.Dense(128, activation="relu")(inputs)
+        x = layers.Reshape((1, 1, 128))(x)
+        x = layers.Conv2DTranspose(256, 5, 2, activation="relu")(x)
+        x = layers.Conv2DTranspose(128, 5, 2, activation="relu")(x)
+        x = layers.Conv2DTranspose(64, 6, 2, activation="relu")(x)
+
+        outputs = layers.Conv2DTranspose(3, 6, 2, activation="tanh")(x)
+
+        return Model(inputs=inputs, outputs=outputs)
+    
+    def __init__(self):
+        super().__init__()
 
 load_saved_model = False
 if not load_saved_model:
@@ -72,7 +89,7 @@ if not load_saved_model:
             stream.append(obs)
 
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
-        engine.fit(stream, stream, epochs=10, shuffle=True, batch_size=batchsize)
+        engine.fit(stream, stream, epochs=20, shuffle=True, batch_size=batchsize)
         gc.collect()
 
                     
@@ -95,7 +112,6 @@ else:
     engine = models.load_model(f"save")
 
 env.reset()
-_, ax = plt.subplots(1, 2)
 vidstream = []
 for i in range(1000):
     action = env.action_space.sample()
@@ -123,11 +139,10 @@ reconstream = reconstream.numpy()
 reconstream[reconstream < 0.] = 0.
 reconstream[reconstream > 1.] = 1.
 
+_, ax = plt.subplots(1, 2)
 for i in range(len(reconstream)):
     ax[0].imshow(vidstream[i])
     ax[1].imshow(reconstream[i])
 
     ax[1].set_xlabel([i])
     plt.pause(0.001)
-
-plt.show()
