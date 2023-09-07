@@ -2,12 +2,13 @@ import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import gym
 import matplotlib.pyplot as plt
+import random
 import tensorflow as tf
 from keras import layers, models, Model, activations, losses, optimizers, regularizers
 from keras.utils import plot_model
 import gc
 
-env = gym.make("ALE/Breakout-v5", full_action_space=False)
+env = gym.make("ALE/DemonAttack-v5", full_action_space=False)
 obs = env.reset()
 
 class NormalScalar(layers.Layer):
@@ -19,30 +20,28 @@ class NormalScalar(layers.Layer):
         return x * tf.random.normal(1, 0., 1.)
 
 def get_vae():
-    inputs = layers.Input((128, 128, 3))
+    inputs = layers.Input((64, 64, 3))
 
-    x = layers.Conv2D(16, 4, 2, activation="relu")(inputs)
-    x = layers.Conv2D(32, 4, 2, activation="relu")(x)
+    x = layers.Conv2D(32, 4, 2, activation="relu")(inputs)
     x = layers.Conv2D(64, 4, 2, activation="relu")(x)
     x = layers.Conv2D(128, 4, 2, activation="relu")(x)
     x = layers.Conv2D(256, 4, 2, activation="relu")(x)
 
     x = layers.Flatten()(x)
 
-    mu = layers.Dense(1024, activation="tanh")(x)
-    sigma = layers.Dense(1024, activation="relu")(x)
+    mu = layers.Dense(128, activation="tanh")(x)
+    sigma = layers.Dense(128, activation="relu")(x)
 
-    z = layers.Add()([mu, NormalScalar()(sigma)])
+    z = mu + NormalScalar()(sigma)
 
-    w = layers.Dense(1024, activation="relu")(z)
-    w = layers.Reshape((1, 1, 1024))(w)
-    w = layers.Conv2DTranspose(256, 5, 2, activation="relu")(w)
-    w = layers.Conv2DTranspose(128, 5, 2, activation="relu")(w)
-    w = layers.Conv2DTranspose(64, 5, 2, activation="relu")(w)
-    w = layers.Conv2DTranspose(32, 6, 2, activation="relu")(w)
-    w = layers.Conv2DTranspose(3, 6, 2, activation="tanh", use_bias=False)(w)
+    x = layers.Dense(128, activation="relu")(z)
+    x = layers.Reshape((1, 1, 128))(x)
+    x = layers.Conv2DTranspose(256, 5, 2, activation="relu")(x)
+    x = layers.Conv2DTranspose(128, 5, 2, activation="relu")(x)
+    x = layers.Conv2DTranspose(64, 6, 2, activation="relu")(x)
+    outputs = layers.Conv2DTranspose(3, 6, 2, activation="tanh", use_bias=False)(x)
 
-    vae = Model(inputs=inputs, outputs = w)
+    vae = Model(inputs=inputs, outputs=outputs)
     vae.summary()
     vae.compile("adam", "mse")
     # plot_model(vae, show_shapes=True)
@@ -61,21 +60,18 @@ if not load_saved_model:
     for i in range(10):
         stream = []
         env.reset()
+
         while len(stream) < batchsize * 100:
             action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
-            if terminated:
-                env.reset()
+            if terminated or truncated:
+                obs = env.reset()[0]
             obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32)
             obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-            obs = tf.image.resize(obs, (128, 128)) / 255.
+            obs = tf.image.resize(obs, (64, 64)) / 255.
             stream.append(obs)
 
-            if terminated or truncated:
-                env.reset()
-
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
-
         engine.fit(stream, stream, epochs=10, shuffle=True, batch_size=batchsize)
         gc.collect()
 
@@ -99,22 +95,39 @@ else:
     engine = models.load_model(f"save")
 
 env.reset()
-
-for _ in range(1000):
+_, ax = plt.subplots(1, 2)
+vidstream = []
+for i in range(1000):
     action = env.action_space.sample()
     obs, reward, terminated, truncated, info = env.step(action)
     if terminated or truncated:
         env.reset()
 
-obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
-obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-obs = tf.image.resize(obs, (128, 128))
-obs = tf.expand_dims(obs, axis=0)
-pred = engine(obs)
+    obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
+    obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
+    obs = tf.image.resize(obs, (64, 64))
+    vidstream.append(obs)
+    # obs = tf.expand_dims(obs, axis=0)
+    # pred = engine(obs)
+    
+    # if i % 100 == 0:
+        # gc.collect()
 
-_, ax = plt.subplots(1, 2)
+vidstream = tf.convert_to_tensor(vidstream, dtype=tf.dtypes.float32)
 
-ax[0].imshow(obs[0])
-ax[1].imshow(pred[0])
+reconstream = engine(vidstream)
+
+vidstream = vidstream.numpy()
+reconstream = reconstream.numpy()
+
+reconstream[reconstream < 0.] = 0.
+reconstream[reconstream > 1.] = 1.
+
+for i in range(len(reconstream)):
+    ax[0].imshow(vidstream[i])
+    ax[1].imshow(reconstream[i])
+
+    ax[1].set_xlabel([i])
+    plt.pause(0.001)
 
 plt.show()
