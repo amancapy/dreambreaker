@@ -98,6 +98,8 @@ class VAE(models.Model):
 
 
 load_saved_model = False
+save_name = "save"
+
 if not load_saved_model:
     opt = optimizers.Adam()
     loss = losses.MeanSquaredError()
@@ -106,7 +108,7 @@ if not load_saved_model:
     vae = VAE()
     vae.compile(optimizer=optimizers.Adam())
 
-    for i in range(1):
+    for i in range(10):
         stream = []
         env.reset()
 
@@ -115,13 +117,12 @@ if not load_saved_model:
             obs, reward, terminated, truncated, info = env.step(action)
             if terminated or truncated:
                 obs = env.reset()[0]
-            obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32)
             obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
             obs = tf.image.resize(obs, (64, 64)) / 255.
             stream.append(obs)
 
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
-        vae.fit(stream, epochs=1, shuffle=True, batch_size=batchsize)
+        vae.fit(stream, epochs=20, shuffle=True, batch_size=batchsize)
         gc.collect()
                     
         # with tf.GradientTape() as tape:
@@ -138,10 +139,9 @@ if not load_saved_model:
         #     i += 1
     
     built_shadow = vae.get_built_shadow()
-    built_shadow.save(f"save")
+    built_shadow.save(save_name)
 
-else:
-    vae = models.load_model(f"save")
+vae = models.load_model(save_name)
 
 env.reset()
 vidstream = []
