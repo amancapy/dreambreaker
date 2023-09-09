@@ -5,7 +5,7 @@ import tensorflow as tf
 from keras import layers, models, Model, activations, losses, optimizers, regularizers, metrics
 from keras.utils import plot_model
 import gc
-import pygame
+import pygame as pg
 
 env = gym.make("ALE/Breakout-v5", full_action_space=False)
 obs = env.reset()
@@ -27,10 +27,7 @@ class VAE(models.Model):
         self.recon_loss_tracker = metrics.Mean("recon_loss")
         self.kld_loss_tracker = metrics.Mean("kld_loss")
 
-        self.optimizer = optimizers.Adam()
         self.latent_size = latent_size    
-        self.era = 0
-
         self.encoder = self.get_encoder()
         self.decoder = self.get_decoder()
 
@@ -64,7 +61,7 @@ class VAE(models.Model):
         x = layers.Conv2DTranspose(64, 5, 2, activation="relu")(x)
         x = layers.Conv2DTranspose(32, 6, 2, activation="relu")(x)
 
-        x = layers.Conv2DTranspose(3, 6, 2, activation="tanh")(x)
+        x = layers.Conv2DTranspose(3, 6, 2, activation="relu")(x)
 
         return Model(inputs=inputs, outputs=x)
     
@@ -96,18 +93,18 @@ class VAE(models.Model):
             }
 
 
-load_saved_model = True
+load_saved_model = False
 save_name = "save"
 
 if not load_saved_model:
     opt = optimizers.Adam()
     loss = losses.MeanSquaredError()
 
-    batchsize = 256
-    vae = VAE(64)
-    vae.compile(optimizer=optimizers.Adam(learning_rate=0.0005, amsgrad=True))
+    batchsize = 32
+    vae = VAE(256)
+    vae.compile(optimizer=optimizers.Adam(amsgrad=True))
 
-    for i in range(20):
+    for i in range(1):
         stream = []
         env.reset()
 
@@ -119,12 +116,12 @@ if not load_saved_model:
 
             obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
             obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-            obs = tf.image.resize(obs, (64, 64), "nearest")
+            obs = tf.image.resize(obs, (64, 64), "gaussian")
             stream.append(obs)
 
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
-        vae.fit(stream, epochs=10, shuffle=True, batch_size=batchsize, verbose=1)
-        vae.era += 1
+        vae.fit(stream, epochs=50, shuffle=True, batch_size=batchsize, verbose=1)
+
         gc.collect()
                     
         # with tf.GradientTape() as tape:
@@ -155,27 +152,11 @@ for i in range(1000):
 
     obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
     obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-    obs = tf.image.resize(obs, (64, 64), "nearest")
+    obs = tf.image.resize(obs, (64, 64), "gaussian")
     vidstream.append(obs)
 
-
-stream = []
-env.reset()
-
-while len(stream) < 1000:
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    if terminated or truncated:
-        a = env.reset()
-
-    obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
-    obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-    obs = tf.image.resize(obs, (64, 64), "nearest")
-    stream.append(obs)
-
-stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
-vidstream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
-reconstream = vae(stream)
+vidstream = tf.convert_to_tensor(vidstream, dtype=tf.dtypes.float32)
+reconstream = vae(vidstream)
 
 vidstream = vidstream.numpy()
 reconstream = reconstream.numpy()
@@ -183,30 +164,29 @@ reconstream = reconstream.numpy()
 reconstream[reconstream < 0.] = 0.
 reconstream[reconstream > 1.] = 1.
 
-
-pygame.init()
-display = pygame.display.set_mode((512, 256))
+pg.init()
+display = pg.display.set_mode((1024, 512))
 
 
 for x, y in zip(vidstream, reconstream):
-    x = pygame.surfarray.make_surface(x * 255)
-    x = pygame.transform.scale(x, (256, 256))
-    x = pygame.transform.rotate(x, 270)
-    x = pygame.transform.flip(x, True, False)
+    x = pg.surfarray.make_surface(x * 255)
+    x = pg.transform.scale(x, (512, 512))
+    x = pg.transform.rotate(x, 270)
+    x = pg.transform.flip(x, True, False)
 
-    y = pygame.surfarray.make_surface(y * 255)
-    y = pygame.transform.scale(y, (256, 256))
-    y = pygame.transform.rotate(y, 270)
-    y = pygame.transform.flip(y, True, False)
+    y = pg.surfarray.make_surface(y * 255)
+    y = pg.transform.scale(y, (512, 512))
+    y = pg.transform.rotate(y, 270)
+    y = pg.transform.flip(y, True, False)
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
+    for event in pg.event.get():
+        if event.type == pg.QUIT:
             running = False
     
     display.blit(x, (0, 0))
-    display.blit(y, (256, 0))
+    display.blit(y, (512, 0))
 
-    pygame.time.wait(96)
-    pygame.display.update()
+    pg.time.wait(96)
+    pg.display.update()
 
-pygame.quit()
+pg.quit()
