@@ -1,12 +1,11 @@
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import gym
-import matplotlib.pyplot as plt
-import random
 import tensorflow as tf
 from keras import layers, models, Model, activations, losses, optimizers, regularizers, metrics
 from keras.utils import plot_model
 import gc
+import pygame
 
 env = gym.make("ALE/Breakout-v5", full_action_space=False)
 obs = env.reset()
@@ -48,7 +47,6 @@ class VAE(models.Model):
         x = layers.Conv2D(64, 4, 2, activation="relu")(x)
         x = layers.Conv2D(128, 4, 2, activation="relu")(x)
         x = layers.Conv2D(256, 4, 2, activation="relu")(x)
-        x = layers.MultiHeadAttention(8, 1024, attention_axes=(1, 2))(x, x, x)
         x = layers.Flatten()(x)
 
         mu = layers.Dense(self.latent_size)(x)
@@ -98,7 +96,7 @@ class VAE(models.Model):
             }
 
 
-load_saved_model = False
+load_saved_model = True
 save_name = "save"
 
 if not load_saved_model:
@@ -144,6 +142,7 @@ if not load_saved_model:
     built_shadow = vae.get_built_shadow()
     built_shadow.save(save_name)
 
+
 vae = models.load_model(save_name)
 
 env.reset()
@@ -159,14 +158,24 @@ for i in range(1000):
     obs = tf.image.resize(obs, (64, 64), "nearest")
     vidstream.append(obs)
 
-    # obs = tf.expand_dims(obs, axis=0)
-    # pred = engine(obs)
-    
-    # if i % 100 == 0:
-        # gc.collect()
 
-vidstream = tf.convert_to_tensor(vidstream, dtype=tf.dtypes.float32)
-reconstream = vae(vidstream)
+stream = []
+env.reset()
+
+while len(stream) < 1000:
+    action = env.action_space.sample()
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        a = env.reset()
+
+    obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
+    obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
+    obs = tf.image.resize(obs, (64, 64), "nearest")
+    stream.append(obs)
+
+stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
+vidstream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
+reconstream = vae(stream)
 
 vidstream = vidstream.numpy()
 reconstream = reconstream.numpy()
@@ -174,10 +183,30 @@ reconstream = reconstream.numpy()
 reconstream[reconstream < 0.] = 0.
 reconstream[reconstream > 1.] = 1.
 
-_, ax = plt.subplots(1, 2)
-for i in range(len(reconstream)):
-    ax[0].imshow(vidstream[i])
-    ax[1].imshow(reconstream[i])
 
-    ax[1].set_xlabel([i])
-    plt.pause(0.001)
+pygame.init()
+display = pygame.display.set_mode((512, 256))
+
+
+for x, y in zip(vidstream, reconstream):
+    x = pygame.surfarray.make_surface(x * 255)
+    x = pygame.transform.scale(x, (256, 256))
+    x = pygame.transform.rotate(x, 270)
+    x = pygame.transform.flip(x, True, False)
+
+    y = pygame.surfarray.make_surface(y * 255)
+    y = pygame.transform.scale(y, (256, 256))
+    y = pygame.transform.rotate(y, 270)
+    y = pygame.transform.flip(y, True, False)
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+    
+    display.blit(x, (0, 0))
+    display.blit(y, (256, 0))
+
+    pygame.time.wait(96)
+    pygame.display.update()
+
+pygame.quit()
