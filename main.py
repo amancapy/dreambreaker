@@ -8,7 +8,6 @@ from keras import layers, models, Model, activations, losses, optimizers, regula
 from keras.utils import plot_model
 import gc
 
-
 env = gym.make("ALE/Breakout-v5", full_action_space=False)
 obs = env.reset()
 
@@ -29,6 +28,7 @@ class VAE(models.Model):
         self.recon_loss_tracker = metrics.Mean("recon_loss")
         self.kld_loss_tracker = metrics.Mean("kld_loss")
 
+        self.optimizer = optimizers.Adam()
         self.latent_size = latent_size    
         self.era = 0
 
@@ -48,7 +48,7 @@ class VAE(models.Model):
         x = layers.Conv2D(64, 4, 2, activation="relu")(x)
         x = layers.Conv2D(128, 4, 2, activation="relu")(x)
         x = layers.Conv2D(256, 4, 2, activation="relu")(x)
-        x = x + layers.MultiHeadAttention(8, 128)(x, x)
+        x = layers.MultiHeadAttention(8, 1024, attention_axes=(1, 2))(x, x, x)
         x = layers.Flatten()(x)
 
         mu = layers.Dense(self.latent_size)(x)
@@ -66,9 +66,9 @@ class VAE(models.Model):
         x = layers.Conv2DTranspose(64, 5, 2, activation="relu")(x)
         x = layers.Conv2DTranspose(32, 6, 2, activation="relu")(x)
 
-        outputs = layers.Conv2DTranspose(3, 6, 2, activation="relu")(x)
+        x = layers.Conv2DTranspose(3, 6, 2, activation="tanh")(x)
 
-        return Model(inputs=inputs, outputs=outputs)
+        return Model(inputs=inputs, outputs=x)
     
     @property
     def metrics(self):
@@ -79,11 +79,10 @@ class VAE(models.Model):
             mu, logs2, z = self.encoder(data)
             recon = self.decoder(z)
 
-            recon_loss = losses.mean_squared_error(data, recon)
+            recon_loss = losses.mse(data, recon)
             kld_loss = tf.reduce_mean(-0.5 * tf.reduce_sum((1 + logs2 - tf.square(mu) - tf.exp(logs2)), axis=1))
 
-            print(0 if self.era == 0 else 1)            
-            total_loss = recon_loss + (0 if self.era == 0 else 1) * kld_loss
+            total_loss = recon_loss + 0. * kld_loss
 
             grads = tape.gradient(total_loss, self.trainable_variables)
             self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
@@ -106,9 +105,9 @@ if not load_saved_model:
     opt = optimizers.Adam()
     loss = losses.MeanSquaredError()
 
-    batchsize = 32
+    batchsize = 256
     vae = VAE(64)
-    vae.compile(optimizer=optimizers.Adam())
+    vae.compile(optimizer=optimizers.Adam(learning_rate=0.0005, amsgrad=True))
 
     for i in range(20):
         stream = []
@@ -118,11 +117,11 @@ if not load_saved_model:
             action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
             if terminated or truncated:
-                env.reset()
+                a = env.reset()
 
             obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
             obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-            obs = tf.image.resize(obs, (64, 64))
+            obs = tf.image.resize(obs, (64, 64), "nearest")
             stream.append(obs)
 
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
@@ -157,7 +156,7 @@ for i in range(1000):
 
     obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
     obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-    obs = tf.image.resize(obs, (64, 64))
+    obs = tf.image.resize(obs, (64, 64), "nearest")
     vidstream.append(obs)
 
     # obs = tf.expand_dims(obs, axis=0)
