@@ -4,7 +4,10 @@ import gym
 import tensorflow as tf
 from keras import layers, models, Model, activations, losses, optimizers, regularizers, metrics
 from keras.utils import plot_model
+import matplotlib.pyplot as plt
 import gc
+import random
+import numpy as np
 import pygame as pg
 
 env = gym.make("ALE/Breakout-v5", full_action_space=False)
@@ -20,7 +23,7 @@ class NormalScalar(layers.Layer):
         return x * tf.random.normal(1, 0, 1)
 
 
-class VAE(models.Model):
+class ConvVAE(models.Model):
     def __init__(self, latent_size):
         super().__init__(latent_size)
         self.total_loss_tracker = metrics.Mean("total_loss")
@@ -34,16 +37,16 @@ class VAE(models.Model):
 
     def get_built_shadow(self):
         shadow = Model(inputs=self.encoder.inputs, outputs=self.decoder(self.encoder.outputs[2]))
-        shadow.build((64, 64, 3))
+        shadow.build((64, 64, 1))
         return shadow
     
     def get_encoder(self):
-        inputs = layers.Input((64, 64, 3))
+        inputs = layers.Input((64, 64, 1))
 
-        x = layers.Conv2D(32, 4, 2, activation="relu")(inputs)
-        x = layers.Conv2D(64, 4, 2, activation="relu")(x)
-        x = layers.Conv2D(128, 4, 2, activation="relu")(x)
-        x = layers.Conv2D(256, 4, 2, activation="relu")(x)
+        x = layers.Conv2D(32, 4, 2, activation="tanh")(inputs)
+        x = layers.Conv2D(64, 4, 2, activation="tanh")(x)
+        x = layers.Conv2D(128, 4, 2, activation="tanh")(x)
+        x = layers.Conv2D(256, 4, 2, activation="tanh")(x)
         x = layers.Flatten()(x)
 
         mu = layers.Dense(self.latent_size)(x)
@@ -56,12 +59,11 @@ class VAE(models.Model):
         inputs = layers.Input((self.latent_size,))
 
         x = layers.Reshape((1, 1, self.latent_size))(inputs)
-        x = layers.Dense(self.latent_size, activation="relu")(x)
-        x = layers.Conv2DTranspose(128, 5, 2, activation="relu")(x)
-        x = layers.Conv2DTranspose(64, 5, 2, activation="relu")(x)
-        x = layers.Conv2DTranspose(32, 6, 2, activation="relu")(x)
-
-        x = layers.Conv2DTranspose(3, 6, 2, activation="relu")(x)
+        x = layers.Dense(self.latent_size, activation="tanh")(x)
+        x = layers.Conv2DTranspose(128, 5, 2, activation="tanh")(x)
+        x = layers.Conv2DTranspose(64, 5, 2, activation="tanh")(x)
+        x = layers.Conv2DTranspose(32, 6, 2, activation="tanh")(x)
+        x = layers.Conv2DTranspose(1, 6, 2, activation="tanh", use_bias=False)(x)
 
         return Model(inputs=inputs, outputs=x)
     
@@ -94,17 +96,17 @@ class VAE(models.Model):
 
 
 load_saved_model = False
-save_name = "save"
+save_name = "breakout"
 
 if not load_saved_model:
     opt = optimizers.Adam()
     loss = losses.MeanSquaredError()
 
-    batchsize = 32
-    vae = VAE(256)
+    batchsize = 64
+    vae = ConvVAE(256)
     vae.compile(optimizer=optimizers.Adam(amsgrad=True))
 
-    for i in range(1):
+    for i in range(10):
         stream = []
         env.reset()
 
@@ -114,14 +116,18 @@ if not load_saved_model:
             if terminated or truncated:
                 a = env.reset()
 
-            obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
+            obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32)
+            obs = obs / tf.reduce_max(obs)
             obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-            obs = tf.image.resize(obs, (64, 64), "gaussian")
+            obs = tf.image.rgb_to_grayscale(obs)
+            obs = obs * 2 - 1
+            obs = tf.image.resize(obs, (64, 64), "nearest")
+
             stream.append(obs)
-
+        
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
+        
         vae.fit(stream, epochs=50, shuffle=True, batch_size=batchsize, verbose=1)
-
         gc.collect()
                     
         # with tf.GradientTape() as tape:
@@ -150,9 +156,13 @@ for i in range(1000):
     if terminated or truncated:
         env.reset()
 
-    obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32) / 255.
+    obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32)
+    obs = obs / tf.reduce_max(obs)
+
     obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
-    obs = tf.image.resize(obs, (64, 64), "gaussian")
+    obs = tf.image.rgb_to_grayscale(obs)
+    obs = obs * 2  - 1
+    obs = tf.image.resize(obs, (64, 64), "nearest")
     vidstream.append(obs)
 
 vidstream = tf.convert_to_tensor(vidstream, dtype=tf.dtypes.float32)
@@ -169,11 +179,15 @@ display = pg.display.set_mode((1024, 512))
 
 
 for x, y in zip(vidstream, reconstream):
+    x = np.stack([x, x, x], -1)
+    x = np.reshape(x, (64, 64, 3))
     x = pg.surfarray.make_surface(x * 255)
     x = pg.transform.scale(x, (512, 512))
     x = pg.transform.rotate(x, 270)
     x = pg.transform.flip(x, True, False)
 
+    y = np.stack([y, y, y], -1)
+    y = np.reshape(y, (64, 64, 3))
     y = pg.surfarray.make_surface(y * 255)
     y = pg.transform.scale(y, (512, 512))
     y = pg.transform.rotate(y, 270)
