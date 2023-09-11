@@ -30,7 +30,9 @@ class ConvVAE(models.Model):
         self.recon_loss_tracker = metrics.Mean("recon_loss")
         self.kld_loss_tracker = metrics.Mean("kld_loss")
 
-        self.latent_size = latent_size    
+        self.latent_size = latent_size   
+        self.era = 0.
+
         self.encoder = self.get_encoder()
         self.decoder = self.get_decoder()
 
@@ -40,17 +42,21 @@ class ConvVAE(models.Model):
         shadow.build((64, 64, 1))
         return shadow
     
+    def get_loss_weights(self):
+        print(self.era)
+        return tf.convert_to_tensor(self.era / 50., dtype=tf.dtypes.float32)
+
     def get_encoder(self):
         inputs = layers.Input((64, 64, 1))
 
-        x = layers.Conv2D(32, 4, 2, activation="tanh")(inputs)
-        x = layers.Conv2D(64, 4, 2, activation="tanh")(x)
-        x = layers.Conv2D(128, 4, 2, activation="tanh")(x)
-        x = layers.Conv2D(256, 4, 2, activation="tanh")(x)
+        x = layers.Conv2D(32, 4, 2, activation="relu", use_bias=False)(inputs)
+        x = layers.Conv2D(64, 4, 2, activation="relu", use_bias=False)(x)
+        x = layers.Conv2D(128, 4, 2, activation="relu", use_bias=False)(x)
+        x = layers.Conv2D(256, 4, 2, activation="relu", use_bias=False)(x)
         x = layers.Flatten()(x)
 
-        mu = layers.Dense(self.latent_size)(x)
-        logs2 = layers.Dense(self.latent_size)(x)
+        mu = layers.Dense(self.latent_size, use_bias=False, activation="tanh")(x)
+        logs2 = layers.Dense(self.latent_size, use_bias=False, activation="tanh")(x)
         z = mu + NormalScalar()(tf.exp(logs2 / 2))
 
         return Model(inputs=inputs, outputs=[mu, logs2, z])
@@ -59,11 +65,11 @@ class ConvVAE(models.Model):
         inputs = layers.Input((self.latent_size,))
 
         x = layers.Reshape((1, 1, self.latent_size))(inputs)
-        x = layers.Dense(self.latent_size, activation="tanh")(x)
-        x = layers.Conv2DTranspose(128, 5, 2, activation="tanh")(x)
-        x = layers.Conv2DTranspose(64, 5, 2, activation="tanh")(x)
-        x = layers.Conv2DTranspose(32, 6, 2, activation="tanh")(x)
-        x = layers.Conv2DTranspose(1, 6, 2, activation="tanh", use_bias=False)(x)
+        x = layers.Dense(self.latent_size, activation="relu", use_bias=False)(x)
+        x = layers.Conv2DTranspose(256, 5, 2, activation="relu", use_bias=False)(x)
+        x = layers.Conv2DTranspose(128, 5, 2, activation="relu", use_bias=False)(x)
+        x = layers.Conv2DTranspose(64, 6, 2, activation="relu", use_bias=False)(x)
+        x = layers.Conv2DTranspose(1, 6, 2, activation="sigmoid", use_bias=False)(x)
 
         return Model(inputs=inputs, outputs=x)
     
@@ -75,11 +81,13 @@ class ConvVAE(models.Model):
         with tf.GradientTape() as tape:
             mu, logs2, z = self.encoder(data)
             recon = self.decoder(z)
+            
+            kld_weight = tf.py_function(func=self.get_loss_weights, inp=[], Tout=float)
+            
+            recon_loss = losses.binary_crossentropy(data, recon) + 0.1 * losses.mse(data, recon)
+            kld_loss = tf.reduce_mean(-0.5 * tf.reduce_mean((1 + logs2 - tf.square(mu) - tf.exp(logs2)), axis=1))
 
-            recon_loss = losses.mse(data, recon)
-            kld_loss = tf.reduce_mean(-0.5 * tf.reduce_sum((1 + logs2 - tf.square(mu) - tf.exp(logs2)), axis=1))
-
-            total_loss = recon_loss + 0. * kld_loss
+            total_loss = recon_loss + kld_weight * kld_loss
 
             grads = tape.gradient(total_loss, self.trainable_variables)
             self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
@@ -103,10 +111,10 @@ if not load_saved_model:
     loss = losses.MeanSquaredError()
 
     batchsize = 64
-    vae = ConvVAE(256)
+    vae = ConvVAE(512)
     vae.compile(optimizer=optimizers.Adam(amsgrad=True))
 
-    for i in range(10):
+    for i in range(50):
         stream = []
         env.reset()
 
@@ -114,20 +122,20 @@ if not load_saved_model:
             action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
             if terminated or truncated:
-                a = env.reset()
+                env.reset()
 
             obs = tf.convert_to_tensor(obs, dtype=tf.dtypes.float32)
             obs = obs / tf.reduce_max(obs)
             obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
             obs = tf.image.rgb_to_grayscale(obs)
-            obs = obs * 2 - 1
-            obs = tf.image.resize(obs, (64, 64), "nearest")
+            obs = tf.image.resize(obs, (64, 64))
 
             stream.append(obs)
         
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
         
-        vae.fit(stream, epochs=50, shuffle=True, batch_size=batchsize, verbose=1)
+        vae.fit(stream, epochs=1, shuffle=True, batch_size=batchsize, verbose=1)
+        vae.era += 1
         gc.collect()
                     
         # with tf.GradientTape() as tape:
@@ -161,8 +169,7 @@ for i in range(1000):
 
     obs = tf.pad(obs, [[23, 23], [48, 48], [0, 0]])
     obs = tf.image.rgb_to_grayscale(obs)
-    obs = obs * 2  - 1
-    obs = tf.image.resize(obs, (64, 64), "nearest")
+    obs = tf.image.resize(obs, (64, 64))
     vidstream.append(obs)
 
 vidstream = tf.convert_to_tensor(vidstream, dtype=tf.dtypes.float32)
