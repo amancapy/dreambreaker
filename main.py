@@ -31,7 +31,7 @@ class ConvVAE(models.Model):
         self.kld_loss_tracker = metrics.Mean("kld_loss")
 
         self.latent_size = latent_size   
-        self.era = 0.
+        self.era = tf.convert_to_tensor(0., dtype=tf.dtypes.float32)
 
         self.encoder = self.get_encoder()
         self.decoder = self.get_decoder()
@@ -42,10 +42,6 @@ class ConvVAE(models.Model):
         shadow.build((64, 64, 1))
         return shadow
     
-    def get_loss_weights(self):
-        print(self.era)
-        return tf.convert_to_tensor(self.era / 50., dtype=tf.dtypes.float32)
-
     def get_encoder(self):
         inputs = layers.Input((64, 64, 1))
 
@@ -55,8 +51,8 @@ class ConvVAE(models.Model):
         x = layers.Conv2D(256, 4, 2, activation="relu", use_bias=False)(x)
         x = layers.Flatten()(x)
 
-        mu = layers.Dense(self.latent_size, use_bias=False, activation="tanh")(x)
-        logs2 = layers.Dense(self.latent_size, use_bias=False, activation="tanh")(x)
+        mu = layers.Dense(self.latent_size, use_bias=False)(x)
+        logs2 = layers.Dense(self.latent_size, use_bias=False)(x)
         z = mu + NormalScalar()(tf.exp(logs2 / 2))
 
         return Model(inputs=inputs, outputs=[mu, logs2, z])
@@ -77,14 +73,19 @@ class ConvVAE(models.Model):
     def metrics(self):
         return [self.total_loss_tracker, self.recon_loss_tracker, self.kld_loss_tracker]
     
+    def get_loss_weights(self):
+        return tf.convert_to_tensor((5 * (1 - self.era / 50), self.era / 500.), dtype=tf.dtypes.float32)
+    
     def train_step(self, data):
         with tf.GradientTape() as tape:
             mu, logs2, z = self.encoder(data)
             recon = self.decoder(z)
             
-            kld_weight = tf.py_function(func=self.get_loss_weights, inp=[], Tout=float)
-            
-            recon_loss = losses.binary_crossentropy(data, recon) + 0.1 * losses.mse(data, recon)
+            weights =  tf.py_function(func=self.get_loss_weights, inp=[], Tout=float)
+            mse_weight = weights[0]
+            kld_weight = weights[1]
+
+            recon_loss = losses.binary_crossentropy(data, recon) + mse_weight * losses.mse(data, recon)
             kld_loss = tf.reduce_mean(-0.5 * tf.reduce_mean((1 + logs2 - tf.square(mu) - tf.exp(logs2)), axis=1))
 
             total_loss = recon_loss + kld_weight * kld_loss
@@ -103,7 +104,7 @@ class ConvVAE(models.Model):
             }
 
 
-load_saved_model = False
+load_saved_model = True
 save_name = "breakout"
 
 if not load_saved_model:
@@ -134,7 +135,7 @@ if not load_saved_model:
         
         stream = tf.convert_to_tensor(stream, dtype=tf.dtypes.float32)
         
-        vae.fit(stream, epochs=1, shuffle=True, batch_size=batchsize, verbose=1)
+        vae.fit(stream, epochs=10, shuffle=True, batch_size=batchsize, verbose=1)
         vae.era += 1
         gc.collect()
                     
